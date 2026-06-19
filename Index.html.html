@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Barcode Scanner</title>
+<script src="https://unpkg.com/@zxing/library@0.21.3/umd/index.min.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f172a; color: #e2e8f0; padding: 12px; max-width: 600px; margin: 0 auto;
+  }
+  h1 { font-size: 18px; margin-bottom: 12px; text-align: center; color: #38bdf8; }
+  #videoWrap {
+    position: relative; width: 100%; background: #000; border-radius: 12px;
+    overflow: hidden; aspect-ratio: 4/3; display: none;
+  }
+  #video { width: 100%; height: 100%; object-fit: cover; }
+  .scanline {
+    position: absolute; left: 8%; right: 8%; top: 50%; height: 2px;
+    background: #f43f5e; box-shadow: 0 0 8px #f43f5e;
+  }
+  .btn {
+    display: block; width: 100%; padding: 14px; font-size: 16px; font-weight: 600;
+    border: none; border-radius: 10px; margin: 8px 0; cursor: pointer; color: #fff;
+  }
+  .btn-primary { background: #0ea5e9; }
+  .btn-stop { background: #f43f5e; }
+  .btn-export { background: #22c55e; }
+  .btn-clear { background: #475569; }
+  .btn:active { opacity: .8; }
+  .row { display: flex; gap: 8px; }
+  .row .btn { flex: 1; }
+  .stat { text-align: center; font-size: 13px; color: #94a3b8; margin: 8px 0; }
+  .options { display: flex; align-items: center; gap: 8px; margin: 10px 0; font-size: 14px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 13px; }
+  th, td { padding: 8px 6px; border-bottom: 1px solid #1e293b; text-align: left; }
+  th { color: #38bdf8; }
+  td.code { font-family: monospace; word-break: break-all; }
+  .del { color: #f43f5e; cursor: pointer; font-weight: 700; }
+  .empty { text-align: center; color: #475569; padding: 20px; }
+  input[type=text] {
+    flex: 1; padding: 10px; border-radius: 8px; border: 1px solid #334155;
+    background: #1e293b; color: #e2e8f0; font-size: 14px;
+  }
+</style>
+</head>
+<body>
+  <h1>📷 Máy quét Barcode → CSV</h1>
+
+  <div id="videoWrap">
+    <video id="video" playsinline></video>
+    <div class="scanline"></div>
+  </div>
+
+  <button id="startBtn" class="btn btn-primary">Bắt đầu quét</button>
+  <button id="stopBtn" class="btn btn-stop" style="display:none">Dừng quét</button>
+
+  <div class="options">
+    <label><input type="checkbox" id="dedupe" checked> Bỏ qua mã trùng</label>
+    <label><input type="checkbox" id="beep" checked> Kêu bíp</label>
+  </div>
+
+  <div class="row">
+    <input type="text" id="manualInput" placeholder="Nhập mã thủ công...">
+    <button id="addBtn" class="btn btn-primary" style="flex:0 0 70px;margin:0">Thêm</button>
+  </div>
+
+  <div class="stat" id="stat">Đã quét: 0 mã</div>
+
+  <div class="row">
+    <button id="exportBtn" class="btn btn-export">Xuất CSV</button>
+    <button id="clearBtn" class="btn btn-clear">Xóa hết</button>
+  </div>
+
+  <table>
+    <thead><tr><th>#</th><th>Mã</th><th>Loại</th><th>Thời gian</th><th></th></tr></thead>
+    <tbody id="tbody"></tbody>
+  </table>
+
+<script>
+(function () {
+  var codeReader = new ZXing.BrowserMultiFormatReader();
+  var records = [];
+  var scanning = false;
+  var lastCode = "";
+  var lastTime = 0;
+
+  var video = document.getElementById("video");
+  var videoWrap = document.getElementById("videoWrap");
+  var startBtn = document.getElementById("startBtn");
+  var stopBtn = document.getElementById("stopBtn");
+  var tbody = document.getElementById("tbody");
+  var stat = document.getElementById("stat");
+
+  function playBeep() {
+    if (!document.getElementById("beep").checked) return;
+    try {
+      var ctx = new (window.AudioContext || window.webkitAudioContext)();
+      var osc = ctx.createOscillator();
+      var gain = ctx.createGain();
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.frequency.value = 880; osc.type = "square";
+      gain.gain.setValueAtTime(0.2, ctx.currentTime);
+      osc.start();
+      gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+      osc.stop(ctx.currentTime + 0.15);
+    } catch (e) {}
+  }
+
+  function addRecord(code, type) {
+    var now = Date.now();
+    if (document.getElementById("dedupe").checked) {
+      for (var i = 0; i < records.length; i++) {
+        if (records[i].code === code) return;
+      }
+    }
+    // chống quét lặp cùng mã trong 1.5s
+    if (code === lastCode && (now - lastTime) < 1500) return;
+    lastCode = code; lastTime = now;
+
+    var d = new Date();
+    var ts = d.getFullYear() + "-" + pad(d.getMonth()+1) + "-" + pad(d.getDate()) +
+             " " + pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+    records.push({ code: code, type: type || "MANUAL", time: ts });
+    playBeep();
+    render();
+  }
+
+  function pad(n) { return n < 10 ? "0" + n : "" + n; }
+
+  function render() {
+    if (records.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" class="empty">Chưa có mã nào</td></tr>';
+    } else {
+      var html = "";
+      for (var i = 0; i < records.length; i++) {
+        var r = records[i];
+        html += "<tr><td>" + (i+1) + "</td><td class='code'>" + esc(r.code) +
+                "</td><td>" + esc(r.type) + "</td><td>" + r.time +
+                "</td><td><span class='del' data-i='" + i + "'>✕</span></td></tr>";
+      }
+      tbody.innerHTML = html;
+    }
+    stat.textContent = "Đã quét: " + records.length + " mã";
+  }
+
+  function esc(s) {
+    return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+
+  tbody.addEventListener("click", function (e) {
+    if (e.target.classList.contains("del")) {
+      var i = parseInt(e.target.getAttribute("data-i"), 10);
+      records.splice(i, 1);
+      render();
+    }
+  });
+
+  startBtn.addEventListener("click", function () {
+    videoWrap.style.display = "block";
+    startBtn.style.display = "none";
+    stopBtn.style.display = "block";
+    scanning = true;
+    codeReader.decodeFromConstraints(
+      { video: { facingMode: { ideal: "environment" } } },
+      video,
+      function (result, err) {
+        if (result) {
+          addRecord(result.getText(), result.getBarcodeFormat ?
+            ZXing.BarcodeFormat[result.getBarcodeFormat()] : "BARCODE");
+        }
+      }
+    ).catch(function (e) {
+      alert("Không mở được camera: " + e + "\nHãy dùng HTTPS và cấp quyền camera.");
+      stopScan();
+    });
+  });
+
+  function stopScan() {
+    scanning = false;
+    codeReader.reset();
+    videoWrap.style.display = "none";
+    startBtn.style.display = "block";
+    stopBtn.style.display = "none";
+  }
+  stopBtn.addEventListener("click", stopScan);
+
+  document.getElementById("addBtn").addEventListener("click", function () {
+    var inp = document.getElementById("manualInput");
+    var v = inp.value.trim();
+    if (v) { addRecord(v, "MANUAL"); inp.value = ""; }
+  });
+  document.getElementById("manualInput").addEventListener("keydown", function (e) {
+    if (e.key === "Enter") document.getElementById("addBtn").click();
+  });
+
+  document.getElementById("clearBtn").addEventListener("click", function () {
+    if (records.length && confirm("Xóa toàn bộ " + records.length + " mã?")) {
+      records = []; render();
+    }
+  });
+
+  document.getElementById("exportBtn").addEventListener("click", function () {
+    if (records.length === 0) { alert("Chưa có dữ liệu để xuất."); return; }
+    var csv = "STT,Ma,Loai,ThoiGian\n";
+    for (var i = 0; i < records.length; i++) {
+      var r = records[i];
+      csv += (i+1) + ",\"" + r.code.replace(/"/g,'""') + "\"," + r.type + ",\"" + r.time + "\"\n";
+    }
+    var blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    var fn = "barcode_" + new Date().toISOString().slice(0,10) + ".csv";
+    a.href = url; a.download = fn;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
